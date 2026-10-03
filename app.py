@@ -4,6 +4,9 @@ import os
 import uuid
 import subprocess
 import signal
+import zipfile
+import shutil
+import sys
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
@@ -12,7 +15,6 @@ app.secret_key = os.getenv("SECRET_KEY", "ASIF_HOSTING_SECRET_KEY")
 
 DB = "users.db"
 UPLOAD_FOLDER = "bot_uploads"
-ALLOWED_EXTENSIONS = {"py", "zip"}
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -37,18 +39,30 @@ def init_db():
             user_id INTEGER NOT NULL,
             bot_name TEXT NOT NULL,
             filename TEXT NOT NULL,
+            bot_folder TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            pid INTEGER DEFAULT NULL,
+            status TEXT DEFAULT 'Stopped',
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
     """)
 
-    # Add columns if old database does not have them
     columns = [
-        row[1] for row in cur.execute("PRAGMA table_info(bots)").fetchall()
+        row[1]
+        for row in cur.execute(
+            "PRAGMA table_info(bots)"
+        ).fetchall()
     ]
 
+    if "bot_folder" not in columns:
+        cur.execute(
+            "ALTER TABLE bots ADD COLUMN bot_folder TEXT DEFAULT ''"
+        )
+
     if "pid" not in columns:
-        cur.execute("ALTER TABLE bots ADD COLUMN pid INTEGER DEFAULT NULL")
+        cur.execute(
+            "ALTER TABLE bots ADD COLUMN pid INTEGER DEFAULT NULL"
+        )
 
     if "status" not in columns:
         cur.execute(
@@ -90,13 +104,13 @@ header h1 {
 
 .container {
     max-width: 900px;
-    margin: 35px auto;
+    margin: 30px auto;
     padding: 15px;
 }
 
 .card {
     background: #1d2b42;
-    padding: 25px;
+    padding: 24px;
     border-radius: 15px;
     margin-bottom: 18px;
     box-shadow: 0 8px 25px rgba(0,0,0,.2);
@@ -110,7 +124,6 @@ input {
     border-radius: 8px;
     background: #101827;
     color: white;
-    outline: none;
 }
 
 button {
@@ -121,7 +134,7 @@ button {
     border-radius: 8px;
     font-weight: bold;
     cursor: pointer;
-    margin-top: 5px;
+    margin: 4px;
 }
 
 button:hover {
@@ -151,6 +164,16 @@ a {
     color: #38e8a5;
 }
 
+.running {
+    color: #38e8a5;
+    font-weight: bold;
+}
+
+.stopped {
+    color: #ff6b6b;
+    font-weight: bold;
+}
+
 .bot {
     background: #101827;
     padding: 18px;
@@ -161,22 +184,11 @@ a {
 .bot-name {
     font-size: 19px;
     font-weight: bold;
-    margin-bottom: 8px;
 }
 
 .small {
     color: #aaa;
     font-size: 13px;
-}
-
-.running {
-    color: #38e8a5;
-    font-weight: bold;
-}
-
-.stopped {
-    color: #ff6b6b;
-    font-weight: bold;
 }
 
 footer {
@@ -188,7 +200,7 @@ footer {
 """
 
 
-# ================= LOGIN =================
+# ================= LOGIN PAGE =================
 
 LOGIN_HTML = """
 <!DOCTYPE html>
@@ -198,7 +210,6 @@ LOGIN_HTML = """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 """ + STYLE + """
 </head>
-
 <body>
 
 <header>
@@ -207,7 +218,6 @@ LOGIN_HTML = """
 </header>
 
 <div class="container">
-
 <div class="card">
 
 <h2>🔐 Login</h2>
@@ -234,7 +244,9 @@ placeholder="Enter password"
 required
 >
 
-<button type="submit">Login</button>
+<button type="submit">
+Login
+</button>
 
 </form>
 
@@ -244,7 +256,6 @@ Don't have an account?
 </p>
 
 </div>
-
 </div>
 
 <footer>
@@ -256,18 +267,16 @@ Don't have an account?
 """
 
 
-# ================= REGISTER =================
+# ================= REGISTER PAGE =================
 
 REGISTER_HTML = """
 <!DOCTYPE html>
 <html>
-
 <head>
 <title>Register - ASIF BOT HOSTING</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 """ + STYLE + """
 </head>
-
 <body>
 
 <header>
@@ -276,7 +285,6 @@ REGISTER_HTML = """
 </header>
 
 <div class="container">
-
 <div class="card">
 
 <h2>📝 Registration</h2>
@@ -288,7 +296,6 @@ REGISTER_HTML = """
 <form method="POST">
 
 <label>Username</label>
-
 <input
 type="text"
 name="username"
@@ -297,7 +304,6 @@ required
 >
 
 <label>Password</label>
-
 <input
 type="password"
 name="password"
@@ -306,7 +312,6 @@ required
 >
 
 <label>Confirm Password</label>
-
 <input
 type="password"
 name="confirm"
@@ -326,7 +331,6 @@ Already have an account?
 </p>
 
 </div>
-
 </div>
 
 <footer>
@@ -343,7 +347,6 @@ Already have an account?
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
-
 <head>
 
 <title>Dashboard - ASIF BOT HOSTING</title>
@@ -369,7 +372,6 @@ Powerful Telegram Bot Hosting Platform
 
 </header>
 
-
 <div class="container">
 
 
@@ -384,23 +386,18 @@ Manage your Telegram bots from one dashboard.
 </p>
 
 <a href="#upload">
-
 <button>
 🚀 Upload Bot
 </button>
-
 </a>
 
 <a href="/logout">
-
-<button style="margin-left:8px;">
+<button>
 Logout
 </button>
-
 </a>
 
 </div>
-
 
 
 <div class="card">
@@ -421,7 +418,7 @@ Logout
 </div>
 
 <p class="small">
-File: {{ bot[2] }}
+Main file: {{ bot[2] }}
 </p>
 
 <p class="small">
@@ -429,10 +426,10 @@ Uploaded: {{ bot[3] }}
 </p>
 
 
-{% if bot[5] == "Running" %}
+{% if bot[6] == "Running" %}
 
 <p class="running">
-● Running
+🟢 Running
 </p>
 
 <form
@@ -454,7 +451,7 @@ class="stop"
 {% else %}
 
 <p class="stopped">
-● Stopped
+🔴 Stopped
 </p>
 
 <form
@@ -476,7 +473,7 @@ style="display:inline;"
 method="POST"
 action="/delete/{{ bot[0] }}"
 style="display:inline;"
-onsubmit="return confirm('Delete this bot?');"
+onsubmit="return confirm('Delete this bot permanently?');"
 >
 
 <button
@@ -488,14 +485,13 @@ class="delete"
 
 </form>
 
-
 </div>
 
 {% endfor %}
 
 {% else %}
 
-<p class="status">
+<p>
 No bots uploaded yet.
 </p>
 
@@ -504,29 +500,22 @@ No bots uploaded yet.
 </div>
 
 
-
 <div class="card" id="upload">
 
 <h3>
 📤 Upload New Bot
 </h3>
 
-
 {% if message %}
-
 <p class="success">
 {{ message }}
 </p>
-
 {% endif %}
 
-
 {% if upload_error %}
-
 <p class="error">
 {{ upload_error }}
 </p>
-
 {% endif %}
 
 
@@ -535,7 +524,6 @@ method="POST"
 action="/upload"
 enctype="multipart/form-data"
 >
-
 
 <label>
 Bot Name
@@ -548,9 +536,8 @@ placeholder="Example: My Telegram Bot"
 required
 >
 
-
 <label>
-Bot File
+Bot File / ZIP
 </label>
 
 <input
@@ -560,20 +547,21 @@ accept=".py,.zip"
 required
 >
 
-
 <button type="submit">
 📤 Upload Bot
 </button>
 
 </form>
 
+<p class="small">
+Upload .py or .zip
+</p>
 
 <p class="small">
-Allowed files: .py and .zip
+ZIP should contain bot.py and requirements.txt
 </p>
 
 </div>
-
 
 
 <div class="card">
@@ -584,21 +572,20 @@ Allowed files: .py and .zip
 
 <p>✓ User Accounts</p>
 <p>✓ Bot Upload</p>
-<p>✓ Start / Stop Bot</p>
+<p>✓ requirements.txt Support</p>
+<p>✓ ZIP Bot Support</p>
+<p>✓ Start / Stop</p>
 <p>✓ Running / Stopped Status</p>
 <p>✓ Delete Bot</p>
-<p>✓ My Bots Dashboard</p>
 
 </div>
 
 
 </div>
-
 
 <footer>
 © 2026 ASIF BOT HOSTING
 </footer>
-
 
 </body>
 </html>
@@ -628,7 +615,7 @@ def get_current_user():
     return user
 
 
-# ================= BOT PROCESS =================
+# ================= BOT =================
 
 def get_bot(bot_id, user_id):
 
@@ -636,7 +623,14 @@ def get_bot(bot_id, user_id):
 
     bot = conn.execute(
         """
-        SELECT id, bot_name, filename, pid, status
+        SELECT
+            id,
+            bot_name,
+            filename,
+            bot_folder,
+            created_at,
+            pid,
+            status
         FROM bots
         WHERE id = ? AND user_id = ?
         """,
@@ -648,7 +642,7 @@ def get_bot(bot_id, user_id):
     return bot
 
 
-def is_process_running(pid):
+def process_running(pid):
 
     if not pid:
         return False
@@ -660,7 +654,7 @@ def is_process_running(pid):
         return False
 
 
-def update_status(bot_id, pid, status):
+def update_bot_status(bot_id, pid, status):
 
     conn = sqlite3.connect(DB)
 
@@ -691,12 +685,14 @@ def home():
 
     bots = conn.execute(
         """
-        SELECT id,
-               bot_name,
-               filename,
-               created_at,
-               pid,
-               status
+        SELECT
+            id,
+            bot_name,
+            filename,
+            created_at,
+            bot_folder,
+            pid,
+            status
         FROM bots
         WHERE user_id = ?
         ORDER BY id DESC
@@ -706,40 +702,40 @@ def home():
 
     conn.close()
 
-    # Check real process status
+    # Refresh status
     for bot in bots:
 
-        if bot[4]:
+        if bot[5]:
 
-            if is_process_running(bot[4]):
+            if process_running(bot[5]):
 
-                if bot[5] != "Running":
-                    update_status(
+                if bot[6] != "Running":
+                    update_bot_status(
                         bot[0],
-                        bot[4],
+                        bot[5],
                         "Running"
                     )
 
             else:
 
-                if bot[5] != "Stopped":
-                    update_status(
-                        bot[0],
-                        None,
-                        "Stopped"
-                    )
+                update_bot_status(
+                    bot[0],
+                    None,
+                    "Stopped"
+                )
 
-    # Reload bots
     conn = sqlite3.connect(DB)
 
     bots = conn.execute(
         """
-        SELECT id,
-               bot_name,
-               filename,
-               created_at,
-               pid,
-               status
+        SELECT
+            id,
+            bot_name,
+            filename,
+            created_at,
+            bot_folder,
+            pid,
+            status
         FROM bots
         WHERE user_id = ?
         ORDER BY id DESC
@@ -905,51 +901,125 @@ def upload_bot():
         else ""
     )
 
-    if extension not in ALLOWED_EXTENSIONS:
+    if extension not in {"py", "zip"}:
 
-        return render_template_string(
-            DASHBOARD_HTML,
-            username=user[1],
-            bots=[],
-            message=None,
-            upload_error="Only .py and .zip files are allowed."
-        )
+        return redirect("/")
 
-    unique_name = (
-        str(uuid.uuid4())
-        + "_"
-        + original_name
-    )
+    bot_id_folder = str(uuid.uuid4())
 
     user_folder = os.path.join(
         UPLOAD_FOLDER,
         str(user[0])
     )
 
-    os.makedirs(
+    bot_folder = os.path.join(
         user_folder,
+        bot_id_folder
+    )
+
+    os.makedirs(
+        bot_folder,
         exist_ok=True
     )
 
-    file_path = os.path.join(
-        user_folder,
-        unique_name
-    )
 
-    bot_file.save(file_path)
+    # ================= PY FILE =================
+
+    if extension == "py":
+
+        file_path = os.path.join(
+            bot_folder,
+            original_name
+        )
+
+        bot_file.save(file_path)
+
+        main_file = original_name
+
+
+    # ================= ZIP FILE =================
+
+    else:
+
+        zip_path = os.path.join(
+            bot_folder,
+            "upload.zip"
+        )
+
+        bot_file.save(zip_path)
+
+        try:
+
+            with zipfile.ZipFile(
+                zip_path,
+                "r"
+            ) as zip_ref:
+
+                zip_ref.extractall(
+                    bot_folder
+                )
+
+            os.remove(zip_path)
+
+        except Exception:
+
+            shutil.rmtree(
+                bot_folder,
+                ignore_errors=True
+            )
+
+            return redirect("/")
+
+        # Find bot.py
+        main_file = None
+
+        for root, dirs, files in os.walk(
+            bot_folder
+        ):
+
+            if "bot.py" in files:
+
+                main_file = os.path.relpath(
+                    os.path.join(
+                        root,
+                        "bot.py"
+                    ),
+                    bot_folder
+                )
+
+                break
+
+        if not main_file:
+
+            shutil.rmtree(
+                bot_folder,
+                ignore_errors=True
+            )
+
+            return redirect("/")
+
+
+    # ================= DATABASE =================
 
     conn = sqlite3.connect(DB)
 
     conn.execute(
         """
         INSERT INTO bots
-        (user_id, bot_name, filename, status)
-        VALUES (?, ?, ?, ?)
+        (
+            user_id,
+            bot_name,
+            filename,
+            bot_folder,
+            status
+        )
+        VALUES (?, ?, ?, ?, ?)
         """,
         (
             user[0],
             bot_name,
-            original_name,
+            main_file,
+            bot_id_folder,
             "Stopped"
         )
     )
@@ -960,9 +1030,51 @@ def upload_bot():
     return redirect("/")
 
 
-# ================= START BOT =================
+# ================= INSTALL REQUIREMENTS =================
 
-@app.route("/start/<int:bot_id>", methods=["POST"])
+def install_requirements(bot_folder):
+
+    requirements_file = os.path.join(
+        bot_folder,
+        "requirements.txt"
+    )
+
+    if not os.path.exists(
+        requirements_file
+    ):
+        return True
+
+    try:
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                requirements_file,
+                "--user"
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=300
+        )
+
+        return result.returncode == 0
+
+    except:
+
+        return False
+
+
+# ================= START =================
+
+@app.route(
+    "/start/<int:bot_id>",
+    methods=["POST"]
+)
 def start_bot(bot_id):
 
     user = get_current_user()
@@ -978,66 +1090,80 @@ def start_bot(bot_id):
     if not bot:
         return redirect("/")
 
-    # Already running
-    if bot[3] and is_process_running(bot[3]):
+    if bot[5] and process_running(
+        bot[5]
+    ):
 
-        update_status(
+        update_bot_status(
             bot_id,
-            bot[3],
+            bot[5],
             "Running"
         )
 
         return redirect("/")
 
-    user_folder = os.path.join(
+
+    bot_folder = os.path.join(
         UPLOAD_FOLDER,
-        str(user[0])
+        str(user[0]),
+        bot[3]
     )
 
-    # Find uploaded file
-    files = os.listdir(user_folder)
-
-    target_file = None
-
-    for filename in files:
-
-        if filename.endswith(
-            "_" + secure_filename(bot[2])
-        ):
-
-            target_file = os.path.join(
-                user_folder,
-                filename
-            )
-
-            break
-
-    if not target_file:
+    if not os.path.exists(
+        bot_folder
+    ):
         return redirect("/")
 
-    # Only Python files can directly run
-    if not target_file.endswith(".py"):
+
+    main_file = os.path.join(
+        bot_folder,
+        bot[2]
+    )
+
+    if not os.path.exists(
+        main_file
+    ):
+        return redirect("/")
+
+
+    # Install requirements
+    requirements_ok = install_requirements(
+        bot_folder
+    )
+
+    if not requirements_ok:
+
+        update_bot_status(
+            bot_id,
+            None,
+            "Stopped"
+        )
 
         return redirect("/")
+
 
     try:
 
         process = subprocess.Popen(
-            ["python", target_file],
+            [
+                sys.executable,
+                main_file
+            ],
+            cwd=bot_folder,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True
         )
 
-        update_status(
+        update_bot_status(
             bot_id,
             process.pid,
             "Running"
         )
 
-    except Exception:
+    except:
 
-        update_status(
+        update_bot_status(
             bot_id,
             None,
             "Stopped"
@@ -1046,9 +1172,12 @@ def start_bot(bot_id):
     return redirect("/")
 
 
-# ================= STOP BOT =================
+# ================= STOP =================
 
-@app.route("/stop/<int:bot_id>", methods=["POST"])
+@app.route(
+    "/stop/<int:bot_id>",
+    methods=["POST"]
+)
 def stop_bot(bot_id):
 
     user = get_current_user()
@@ -1064,7 +1193,7 @@ def stop_bot(bot_id):
     if not bot:
         return redirect("/")
 
-    pid = bot[3]
+    pid = bot[5]
 
     if pid:
 
@@ -1079,7 +1208,7 @@ def stop_bot(bot_id):
 
             pass
 
-    update_status(
+    update_bot_status(
         bot_id,
         None,
         "Stopped"
@@ -1088,9 +1217,12 @@ def stop_bot(bot_id):
     return redirect("/")
 
 
-# ================= DELETE BOT =================
+# ================= DELETE =================
 
-@app.route("/delete/<int:bot_id>", methods=["POST"])
+@app.route(
+    "/delete/<int:bot_id>",
+    methods=["POST"]
+)
 def delete_bot(bot_id):
 
     user = get_current_user()
@@ -1106,15 +1238,13 @@ def delete_bot(bot_id):
     if not bot:
         return redirect("/")
 
-    # Stop first
-    pid = bot[3]
-
-    if pid:
+    # Stop process
+    if bot[5]:
 
         try:
 
             os.kill(
-                pid,
+                bot[5],
                 signal.SIGTERM
             )
 
@@ -1122,35 +1252,25 @@ def delete_bot(bot_id):
 
             pass
 
-    user_folder = os.path.join(
+
+    # Delete files
+    bot_folder = os.path.join(
         UPLOAD_FOLDER,
-        str(user[0])
+        str(user[0]),
+        bot[3]
     )
 
-    # Delete matching file
-    if os.path.exists(user_folder):
+    if os.path.exists(
+        bot_folder
+    ):
 
-        for filename in os.listdir(
-            user_folder
-        ):
+        shutil.rmtree(
+            bot_folder,
+            ignore_errors=True
+        )
 
-            if filename.endswith(
-                "_" + secure_filename(bot[2])
-            ):
 
-                try:
-
-                    os.remove(
-                        os.path.join(
-                            user_folder,
-                            filename
-                        )
-                    )
-
-                except:
-
-                    pass
-
+    # Delete database record
     conn = sqlite3.connect(DB)
 
     conn.execute(
