@@ -2,11 +2,13 @@ from flask import Flask, request, redirect, session, render_template_string
 import sqlite3
 import os
 import uuid
+import subprocess
+import signal
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.secret_key = "ASIF_HOSTING_SECRET_KEY_CHANGE_THIS"
+app.secret_key = os.getenv("SECRET_KEY", "ASIF_HOSTING_SECRET_KEY")
 
 DB = "users.db"
 UPLOAD_FOLDER = "bot_uploads"
@@ -39,6 +41,19 @@ def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
     """)
+
+    # Add columns if old database does not have them
+    columns = [
+        row[1] for row in cur.execute("PRAGMA table_info(bots)").fetchall()
+    ]
+
+    if "pid" not in columns:
+        cur.execute("ALTER TABLE bots ADD COLUMN pid INTEGER DEFAULT NULL")
+
+    if "status" not in columns:
+        cur.execute(
+            "ALTER TABLE bots ADD COLUMN status TEXT DEFAULT 'Stopped'"
+        )
 
     conn.commit()
     conn.close()
@@ -74,7 +89,7 @@ header h1 {
 }
 
 .container {
-    max-width: 850px;
+    max-width: 900px;
     margin: 35px auto;
     padding: 15px;
 }
@@ -102,14 +117,25 @@ button {
     background: #38e8a5;
     color: #101827;
     border: none;
-    padding: 12px 22px;
+    padding: 11px 18px;
     border-radius: 8px;
     font-weight: bold;
     cursor: pointer;
+    margin-top: 5px;
 }
 
 button:hover {
     opacity: .9;
+}
+
+.stop {
+    background: #ff6b6b;
+    color: white;
+}
+
+.delete {
+    background: #ff3b30;
+    color: white;
 }
 
 a {
@@ -125,25 +151,32 @@ a {
     color: #38e8a5;
 }
 
-.status {
-    color: #38e8a5;
-}
-
 .bot {
     background: #101827;
-    padding: 15px;
+    padding: 18px;
     border-radius: 10px;
-    margin-top: 12px;
+    margin-top: 14px;
 }
 
 .bot-name {
-    font-size: 18px;
+    font-size: 19px;
     font-weight: bold;
+    margin-bottom: 8px;
 }
 
 .small {
     color: #aaa;
     font-size: 13px;
+}
+
+.running {
+    color: #38e8a5;
+    font-weight: bold;
+}
+
+.stopped {
+    color: #ff6b6b;
+    font-weight: bold;
 }
 
 footer {
@@ -165,6 +198,7 @@ LOGIN_HTML = """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 """ + STYLE + """
 </head>
+
 <body>
 
 <header>
@@ -173,6 +207,7 @@ LOGIN_HTML = """
 </header>
 
 <div class="container">
+
 <div class="card">
 
 <h2>🔐 Login</h2>
@@ -184,12 +219,20 @@ LOGIN_HTML = """
 <form method="POST">
 
 <label>Username</label>
-<input type="text" name="username"
-       placeholder="Enter username" required>
+<input
+type="text"
+name="username"
+placeholder="Enter username"
+required
+>
 
 <label>Password</label>
-<input type="password" name="password"
-       placeholder="Enter password" required>
+<input
+type="password"
+name="password"
+placeholder="Enter password"
+required
+>
 
 <button type="submit">Login</button>
 
@@ -201,9 +244,12 @@ Don't have an account?
 </p>
 
 </div>
+
 </div>
 
-<footer>© 2026 ASIF BOT HOSTING</footer>
+<footer>
+© 2026 ASIF BOT HOSTING
+</footer>
 
 </body>
 </html>
@@ -215,11 +261,13 @@ Don't have an account?
 REGISTER_HTML = """
 <!DOCTYPE html>
 <html>
+
 <head>
 <title>Register - ASIF BOT HOSTING</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 """ + STYLE + """
 </head>
+
 <body>
 
 <header>
@@ -228,6 +276,7 @@ REGISTER_HTML = """
 </header>
 
 <div class="container">
+
 <div class="card">
 
 <h2>📝 Registration</h2>
@@ -239,18 +288,35 @@ REGISTER_HTML = """
 <form method="POST">
 
 <label>Username</label>
-<input type="text" name="username"
-       placeholder="Choose username" required>
+
+<input
+type="text"
+name="username"
+placeholder="Choose username"
+required
+>
 
 <label>Password</label>
-<input type="password" name="password"
-       placeholder="Choose password" required>
+
+<input
+type="password"
+name="password"
+placeholder="Choose password"
+required
+>
 
 <label>Confirm Password</label>
-<input type="password" name="confirm"
-       placeholder="Confirm password" required>
 
-<button type="submit">Create Account</button>
+<input
+type="password"
+name="confirm"
+placeholder="Confirm password"
+required
+>
+
+<button type="submit">
+Create Account
+</button>
 
 </form>
 
@@ -260,9 +326,12 @@ Already have an account?
 </p>
 
 </div>
+
 </div>
 
-<footer>© 2026 ASIF BOT HOSTING</footer>
+<footer>
+© 2026 ASIF BOT HOSTING
+</footer>
 
 </body>
 </html>
@@ -274,43 +343,72 @@ Already have an account?
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
+
 <head>
+
 <title>Dashboard - ASIF BOT HOSTING</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<meta
+name="viewport"
+content="width=device-width, initial-scale=1"
+>
+
 """ + STYLE + """
+
 </head>
 
 <body>
 
 <header>
+
 <h1>ASIF BOT HOSTING</h1>
-<p>Powerful Telegram Bot Hosting Platform</p>
+
+<p>
+Powerful Telegram Bot Hosting Platform
+</p>
+
 </header>
+
 
 <div class="container">
 
+
 <div class="card">
 
-<h2>👋 Welcome, {{ username }}!</h2>
+<h2>
+👋 Welcome, {{ username }}!
+</h2>
 
-<p>Manage your Telegram bots from one dashboard.</p>
+<p>
+Manage your Telegram bots from one dashboard.
+</p>
 
 <a href="#upload">
-<button>🚀 Get Started</button>
+
+<button>
+🚀 Upload Bot
+</button>
+
 </a>
 
 <a href="/logout">
+
 <button style="margin-left:8px;">
 Logout
 </button>
+
 </a>
 
 </div>
 
 
+
 <div class="card">
 
-<h3>🤖 My Bots</h3>
+<h3>
+🤖 My Bots
+</h3>
+
 
 {% if bots %}
 
@@ -330,9 +428,66 @@ File: {{ bot[2] }}
 Uploaded: {{ bot[3] }}
 </p>
 
-<p class="status">
-● Uploaded
+
+{% if bot[5] == "Running" %}
+
+<p class="running">
+● Running
 </p>
+
+<form
+method="POST"
+action="/stop/{{ bot[0] }}"
+style="display:inline;"
+>
+
+<button
+type="submit"
+class="stop"
+>
+⛔ Stop
+</button>
+
+</form>
+
+
+{% else %}
+
+<p class="stopped">
+● Stopped
+</p>
+
+<form
+method="POST"
+action="/start/{{ bot[0] }}"
+style="display:inline;"
+>
+
+<button type="submit">
+▶️ Start
+</button>
+
+</form>
+
+{% endif %}
+
+
+<form
+method="POST"
+action="/delete/{{ bot[0] }}"
+style="display:inline;"
+onsubmit="return confirm('Delete this bot?');"
+>
+
+<button
+type="submit"
+class="delete"
+>
+🗑 Delete
+</button>
+
+</form>
+
 
 </div>
 
@@ -349,41 +504,69 @@ No bots uploaded yet.
 </div>
 
 
+
 <div class="card" id="upload">
 
-<h3>📤 Upload New Bot</h3>
+<h3>
+📤 Upload New Bot
+</h3>
+
 
 {% if message %}
-<p class="success">{{ message }}</p>
+
+<p class="success">
+{{ message }}
+</p>
+
 {% endif %}
+
 
 {% if upload_error %}
-<p class="error">{{ upload_error }}</p>
+
+<p class="error">
+{{ upload_error }}
+</p>
+
 {% endif %}
 
-<form method="POST"
-      action="/upload"
-      enctype="multipart/form-data">
 
-<label>Bot Name</label>
+<form
+method="POST"
+action="/upload"
+enctype="multipart/form-data"
+>
 
-<input type="text"
-       name="bot_name"
-       placeholder="Example: My Telegram Bot"
-       required>
 
-<label>Bot File</label>
+<label>
+Bot Name
+</label>
 
-<input type="file"
-       name="bot_file"
-       accept=".py,.zip"
-       required>
+<input
+type="text"
+name="bot_name"
+placeholder="Example: My Telegram Bot"
+required
+>
+
+
+<label>
+Bot File
+</label>
+
+<input
+type="file"
+name="bot_file"
+accept=".py,.zip"
+required
+>
+
 
 <button type="submit">
 📤 Upload Bot
 </button>
 
 </form>
+
 
 <p class="small">
 Allowed files: .py and .zip
@@ -392,28 +575,37 @@ Allowed files: .py and .zip
 </div>
 
 
+
 <div class="card">
 
-<h3>⚡ Hosting Features</h3>
+<h3>
+⚡ Hosting Features
+</h3>
 
 <p>✓ User Accounts</p>
 <p>✓ Bot Upload</p>
+<p>✓ Start / Stop Bot</p>
+<p>✓ Running / Stopped Status</p>
+<p>✓ Delete Bot</p>
 <p>✓ My Bots Dashboard</p>
-<p>✓ File Management</p>
-<p>✓ Backup System</p>
 
 </div>
 
+
 </div>
 
-<footer>© 2026 ASIF BOT HOSTING</footer>
+
+<footer>
+© 2026 ASIF BOT HOSTING
+</footer>
+
 
 </body>
 </html>
 """
 
 
-# ================= GET CURRENT USER =================
+# ================= USER =================
 
 def get_current_user():
 
@@ -423,13 +615,66 @@ def get_current_user():
     conn = sqlite3.connect(DB)
 
     user = conn.execute(
-        "SELECT id, username FROM users WHERE username = ?",
+        """
+        SELECT id, username
+        FROM users
+        WHERE username = ?
+        """,
         (session["username"],)
     ).fetchone()
 
     conn.close()
 
     return user
+
+
+# ================= BOT PROCESS =================
+
+def get_bot(bot_id, user_id):
+
+    conn = sqlite3.connect(DB)
+
+    bot = conn.execute(
+        """
+        SELECT id, bot_name, filename, pid, status
+        FROM bots
+        WHERE id = ? AND user_id = ?
+        """,
+        (bot_id, user_id)
+    ).fetchone()
+
+    conn.close()
+
+    return bot
+
+
+def is_process_running(pid):
+
+    if not pid:
+        return False
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except:
+        return False
+
+
+def update_status(bot_id, pid, status):
+
+    conn = sqlite3.connect(DB)
+
+    conn.execute(
+        """
+        UPDATE bots
+        SET pid = ?, status = ?
+        WHERE id = ?
+        """,
+        (pid, status, bot_id)
+    )
+
+    conn.commit()
+    conn.close()
 
 
 # ================= HOME =================
@@ -446,7 +691,55 @@ def home():
 
     bots = conn.execute(
         """
-        SELECT id, bot_name, filename, created_at
+        SELECT id,
+               bot_name,
+               filename,
+               created_at,
+               pid,
+               status
+        FROM bots
+        WHERE user_id = ?
+        ORDER BY id DESC
+        """,
+        (user[0],)
+    ).fetchall()
+
+    conn.close()
+
+    # Check real process status
+    for bot in bots:
+
+        if bot[4]:
+
+            if is_process_running(bot[4]):
+
+                if bot[5] != "Running":
+                    update_status(
+                        bot[0],
+                        bot[4],
+                        "Running"
+                    )
+
+            else:
+
+                if bot[5] != "Stopped":
+                    update_status(
+                        bot[0],
+                        None,
+                        "Stopped"
+                    )
+
+    # Reload bots
+    conn = sqlite3.connect(DB)
+
+    bots = conn.execute(
+        """
+        SELECT id,
+               bot_name,
+               filename,
+               created_at,
+               pid,
+               status
         FROM bots
         WHERE user_id = ?
         ORDER BY id DESC
@@ -502,7 +795,11 @@ def register():
         try:
 
             conn.execute(
-                "INSERT INTO users (username, password) VALUES (?, ?)",
+                """
+                INSERT INTO users
+                (username, password)
+                VALUES (?, ?)
+                """,
                 (
                     username,
                     generate_password_hash(password)
@@ -543,7 +840,11 @@ def login():
         conn = sqlite3.connect(DB)
 
         user = conn.execute(
-            "SELECT username, password FROM users WHERE username = ?",
+            """
+            SELECT username, password
+            FROM users
+            WHERE username = ?
+            """,
             (username,)
         ).fetchone()
 
@@ -569,7 +870,7 @@ def login():
     )
 
 
-# ================= UPLOAD BOT =================
+# ================= UPLOAD =================
 
 @app.route("/upload", methods=["POST"])
 def upload_bot():
@@ -584,24 +885,25 @@ def upload_bot():
         ""
     ).strip()
 
-    bot_file = request.files.get("bot_file")
+    bot_file = request.files.get(
+        "bot_file"
+    )
 
     if not bot_name:
-
         return redirect("/")
 
     if not bot_file or not bot_file.filename:
-
         return redirect("/")
 
     original_name = secure_filename(
         bot_file.filename
     )
 
-    extension = original_name.rsplit(
-        ".",
-        1
-    )[-1].lower() if "." in original_name else ""
+    extension = (
+        original_name.rsplit(".", 1)[-1].lower()
+        if "." in original_name
+        else ""
+    )
 
     if extension not in ALLOWED_EXTENSIONS:
 
@@ -614,9 +916,7 @@ def upload_bot():
         )
 
     unique_name = (
-        str(user[0])
-        + "_"
-        + str(uuid.uuid4())
+        str(uuid.uuid4())
         + "_"
         + original_name
     )
@@ -643,13 +943,224 @@ def upload_bot():
     conn.execute(
         """
         INSERT INTO bots
-        (user_id, bot_name, filename)
-        VALUES (?, ?, ?)
+        (user_id, bot_name, filename, status)
+        VALUES (?, ?, ?, ?)
         """,
         (
             user[0],
             bot_name,
-            original_name
+            original_name,
+            "Stopped"
+        )
+    )
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/")
+
+
+# ================= START BOT =================
+
+@app.route("/start/<int:bot_id>", methods=["POST"])
+def start_bot(bot_id):
+
+    user = get_current_user()
+
+    if not user:
+        return redirect("/login")
+
+    bot = get_bot(
+        bot_id,
+        user[0]
+    )
+
+    if not bot:
+        return redirect("/")
+
+    # Already running
+    if bot[3] and is_process_running(bot[3]):
+
+        update_status(
+            bot_id,
+            bot[3],
+            "Running"
+        )
+
+        return redirect("/")
+
+    user_folder = os.path.join(
+        UPLOAD_FOLDER,
+        str(user[0])
+    )
+
+    # Find uploaded file
+    files = os.listdir(user_folder)
+
+    target_file = None
+
+    for filename in files:
+
+        if filename.endswith(
+            "_" + secure_filename(bot[2])
+        ):
+
+            target_file = os.path.join(
+                user_folder,
+                filename
+            )
+
+            break
+
+    if not target_file:
+        return redirect("/")
+
+    # Only Python files can directly run
+    if not target_file.endswith(".py"):
+
+        return redirect("/")
+
+    try:
+
+        process = subprocess.Popen(
+            ["python", target_file],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+
+        update_status(
+            bot_id,
+            process.pid,
+            "Running"
+        )
+
+    except Exception:
+
+        update_status(
+            bot_id,
+            None,
+            "Stopped"
+        )
+
+    return redirect("/")
+
+
+# ================= STOP BOT =================
+
+@app.route("/stop/<int:bot_id>", methods=["POST"])
+def stop_bot(bot_id):
+
+    user = get_current_user()
+
+    if not user:
+        return redirect("/login")
+
+    bot = get_bot(
+        bot_id,
+        user[0]
+    )
+
+    if not bot:
+        return redirect("/")
+
+    pid = bot[3]
+
+    if pid:
+
+        try:
+
+            os.kill(
+                pid,
+                signal.SIGTERM
+            )
+
+        except:
+
+            pass
+
+    update_status(
+        bot_id,
+        None,
+        "Stopped"
+    )
+
+    return redirect("/")
+
+
+# ================= DELETE BOT =================
+
+@app.route("/delete/<int:bot_id>", methods=["POST"])
+def delete_bot(bot_id):
+
+    user = get_current_user()
+
+    if not user:
+        return redirect("/login")
+
+    bot = get_bot(
+        bot_id,
+        user[0]
+    )
+
+    if not bot:
+        return redirect("/")
+
+    # Stop first
+    pid = bot[3]
+
+    if pid:
+
+        try:
+
+            os.kill(
+                pid,
+                signal.SIGTERM
+            )
+
+        except:
+
+            pass
+
+    user_folder = os.path.join(
+        UPLOAD_FOLDER,
+        str(user[0])
+    )
+
+    # Delete matching file
+    if os.path.exists(user_folder):
+
+        for filename in os.listdir(
+            user_folder
+        ):
+
+            if filename.endswith(
+                "_" + secure_filename(bot[2])
+            ):
+
+                try:
+
+                    os.remove(
+                        os.path.join(
+                            user_folder,
+                            filename
+                        )
+                    )
+
+                except:
+
+                    pass
+
+    conn = sqlite3.connect(DB)
+
+    conn.execute(
+        """
+        DELETE FROM bots
+        WHERE id = ? AND user_id = ?
+        """,
+        (
+            bot_id,
+            user[0]
         )
     )
 
@@ -673,7 +1184,14 @@ def logout():
 
 if __name__ == "__main__":
 
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
+
     app.run(
         host="0.0.0.0",
-        port=10000
-)
+        port=port
+    )
