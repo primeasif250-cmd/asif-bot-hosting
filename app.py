@@ -1,11 +1,18 @@
 from flask import Flask, request, redirect, session, render_template_string
 import sqlite3
+import os
+import uuid
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.secret_key = "ASIF_HOSTING_SECRET_KEY_CHANGE_THIS"
 
 DB = "users.db"
+UPLOAD_FOLDER = "bot_uploads"
+ALLOWED_EXTENSIONS = {"py", "zip"}
+
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
 # ================= DATABASE =================
@@ -22,6 +29,17 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            bot_name TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -29,7 +47,7 @@ def init_db():
 init_db()
 
 
-# ================= COMMON STYLE =================
+# ================= STYLE =================
 
 STYLE = """
 <style>
@@ -101,16 +119,31 @@ a {
 
 .error {
     color: #ff6b6b;
-    margin-bottom: 12px;
 }
 
 .success {
     color: #38e8a5;
-    margin-bottom: 12px;
 }
 
 .status {
     color: #38e8a5;
+}
+
+.bot {
+    background: #101827;
+    padding: 15px;
+    border-radius: 10px;
+    margin-top: 12px;
+}
+
+.bot-name {
+    font-size: 18px;
+    font-weight: bold;
+}
+
+.small {
+    color: #aaa;
+    font-size: 13px;
 }
 
 footer {
@@ -132,7 +165,6 @@ LOGIN_HTML = """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 """ + STYLE + """
 </head>
-
 <body>
 
 <header>
@@ -141,7 +173,6 @@ LOGIN_HTML = """
 </header>
 
 <div class="container">
-
 <div class="card">
 
 <h2>🔐 Login</h2>
@@ -153,10 +184,12 @@ LOGIN_HTML = """
 <form method="POST">
 
 <label>Username</label>
-<input type="text" name="username" placeholder="Enter username" required>
+<input type="text" name="username"
+       placeholder="Enter username" required>
 
 <label>Password</label>
-<input type="password" name="password" placeholder="Enter password" required>
+<input type="password" name="password"
+       placeholder="Enter password" required>
 
 <button type="submit">Login</button>
 
@@ -168,7 +201,6 @@ Don't have an account?
 </p>
 
 </div>
-
 </div>
 
 <footer>© 2026 ASIF BOT HOSTING</footer>
@@ -188,7 +220,6 @@ REGISTER_HTML = """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 """ + STYLE + """
 </head>
-
 <body>
 
 <header>
@@ -197,7 +228,6 @@ REGISTER_HTML = """
 </header>
 
 <div class="container">
-
 <div class="card">
 
 <h2>📝 Registration</h2>
@@ -209,13 +239,16 @@ REGISTER_HTML = """
 <form method="POST">
 
 <label>Username</label>
-<input type="text" name="username" placeholder="Choose username" required>
+<input type="text" name="username"
+       placeholder="Choose username" required>
 
 <label>Password</label>
-<input type="password" name="password" placeholder="Choose password" required>
+<input type="password" name="password"
+       placeholder="Choose password" required>
 
 <label>Confirm Password</label>
-<input type="password" name="confirm" placeholder="Confirm password" required>
+<input type="password" name="confirm"
+       placeholder="Confirm password" required>
 
 <button type="submit">Create Account</button>
 
@@ -227,7 +260,6 @@ Already have an account?
 </p>
 
 </div>
-
 </div>
 
 <footer>© 2026 ASIF BOT HOSTING</footer>
@@ -263,9 +295,9 @@ DASHBOARD_HTML = """
 
 <p>Manage your Telegram bots from one dashboard.</p>
 
-<button onclick="location.href='#upload'">
-🚀 Get Started
-</button>
+<a href="#upload">
+<button>🚀 Get Started</button>
+</a>
 
 <a href="/logout">
 <button style="margin-left:8px;">
@@ -280,22 +312,82 @@ Logout
 
 <h3>🤖 My Bots</h3>
 
-<p class="status">
-No bots uploaded yet
+{% if bots %}
+
+{% for bot in bots %}
+
+<div class="bot">
+
+<div class="bot-name">
+🤖 {{ bot[1] }}
+</div>
+
+<p class="small">
+File: {{ bot[2] }}
 </p>
+
+<p class="small">
+Uploaded: {{ bot[3] }}
+</p>
+
+<p class="status">
+● Uploaded
+</p>
+
+</div>
+
+{% endfor %}
+
+{% else %}
+
+<p class="status">
+No bots uploaded yet.
+</p>
+
+{% endif %}
 
 </div>
 
 
 <div class="card" id="upload">
 
-<h3>📤 Bot Upload</h3>
+<h3>📤 Upload New Bot</h3>
 
-<p>Bot upload system will be added in the next step.</p>
+{% if message %}
+<p class="success">{{ message }}</p>
+{% endif %}
 
-<button disabled>
-Upload Bot
+{% if upload_error %}
+<p class="error">{{ upload_error }}</p>
+{% endif %}
+
+<form method="POST"
+      action="/upload"
+      enctype="multipart/form-data">
+
+<label>Bot Name</label>
+
+<input type="text"
+       name="bot_name"
+       placeholder="Example: My Telegram Bot"
+       required>
+
+<label>Bot File</label>
+
+<input type="file"
+       name="bot_file"
+       accept=".py,.zip"
+       required>
+
+<button type="submit">
+📤 Upload Bot
 </button>
+
+</form>
+
+<p class="small">
+Allowed files: .py and .zip
+</p>
 
 </div>
 
@@ -304,11 +396,11 @@ Upload Bot
 
 <h3>⚡ Hosting Features</h3>
 
-<p>✓ Easy Bot Management</p>
-<p>✓ Bot Console</p>
+<p>✓ User Accounts</p>
+<p>✓ Bot Upload</p>
+<p>✓ My Bots Dashboard</p>
 <p>✓ File Management</p>
 <p>✓ Backup System</p>
-<p>✓ 24/7 Hosting</p>
 
 </div>
 
@@ -321,19 +413,59 @@ Upload Bot
 """
 
 
-# ================= ROUTES =================
+# ================= GET CURRENT USER =================
+
+def get_current_user():
+
+    if "username" not in session:
+        return None
+
+    conn = sqlite3.connect(DB)
+
+    user = conn.execute(
+        "SELECT id, username FROM users WHERE username = ?",
+        (session["username"],)
+    ).fetchone()
+
+    conn.close()
+
+    return user
+
+
+# ================= HOME =================
 
 @app.route("/")
 def home():
 
-    if "username" not in session:
+    user = get_current_user()
+
+    if not user:
         return redirect("/login")
+
+    conn = sqlite3.connect(DB)
+
+    bots = conn.execute(
+        """
+        SELECT id, bot_name, filename, created_at
+        FROM bots
+        WHERE user_id = ?
+        ORDER BY id DESC
+        """,
+        (user[0],)
+    ).fetchall()
+
+    conn.close()
 
     return render_template_string(
         DASHBOARD_HTML,
-        username=session["username"]
+        username=user[1],
+        bots=bots,
+        message=None,
+        upload_error=None
     )
 
+
+# ================= REGISTER =================
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -345,18 +477,21 @@ def register():
         confirm = request.form["confirm"]
 
         if not username or not password:
+
             return render_template_string(
                 REGISTER_HTML,
                 error="Username and password required."
             )
 
         if password != confirm:
+
             return render_template_string(
                 REGISTER_HTML,
                 error="Passwords do not match."
             )
 
         if len(password) < 6:
+
             return render_template_string(
                 REGISTER_HTML,
                 error="Password must be at least 6 characters."
@@ -365,9 +500,13 @@ def register():
         conn = sqlite3.connect(DB)
 
         try:
+
             conn.execute(
                 "INSERT INTO users (username, password) VALUES (?, ?)",
-                (username, generate_password_hash(password))
+                (
+                    username,
+                    generate_password_hash(password)
+                )
             )
 
             conn.commit()
@@ -391,6 +530,8 @@ def register():
     )
 
 
+# ================= LOGIN =================
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
 
@@ -400,6 +541,7 @@ def login():
         password = request.form["password"]
 
         conn = sqlite3.connect(DB)
+
         user = conn.execute(
             "SELECT username, password FROM users WHERE username = ?",
             (username,)
@@ -407,7 +549,10 @@ def login():
 
         conn.close()
 
-        if user and check_password_hash(user[1], password):
+        if user and check_password_hash(
+            user[1],
+            password
+        ):
 
             session["username"] = user[0]
 
@@ -424,6 +569,98 @@ def login():
     )
 
 
+# ================= UPLOAD BOT =================
+
+@app.route("/upload", methods=["POST"])
+def upload_bot():
+
+    user = get_current_user()
+
+    if not user:
+        return redirect("/login")
+
+    bot_name = request.form.get(
+        "bot_name",
+        ""
+    ).strip()
+
+    bot_file = request.files.get("bot_file")
+
+    if not bot_name:
+
+        return redirect("/")
+
+    if not bot_file or not bot_file.filename:
+
+        return redirect("/")
+
+    original_name = secure_filename(
+        bot_file.filename
+    )
+
+    extension = original_name.rsplit(
+        ".",
+        1
+    )[-1].lower() if "." in original_name else ""
+
+    if extension not in ALLOWED_EXTENSIONS:
+
+        return render_template_string(
+            DASHBOARD_HTML,
+            username=user[1],
+            bots=[],
+            message=None,
+            upload_error="Only .py and .zip files are allowed."
+        )
+
+    unique_name = (
+        str(user[0])
+        + "_"
+        + str(uuid.uuid4())
+        + "_"
+        + original_name
+    )
+
+    user_folder = os.path.join(
+        UPLOAD_FOLDER,
+        str(user[0])
+    )
+
+    os.makedirs(
+        user_folder,
+        exist_ok=True
+    )
+
+    file_path = os.path.join(
+        user_folder,
+        unique_name
+    )
+
+    bot_file.save(file_path)
+
+    conn = sqlite3.connect(DB)
+
+    conn.execute(
+        """
+        INSERT INTO bots
+        (user_id, bot_name, filename)
+        VALUES (?, ?, ?)
+        """,
+        (
+            user[0],
+            bot_name,
+            original_name
+        )
+    )
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/")
+
+
+# ================= LOGOUT =================
+
 @app.route("/logout")
 def logout():
 
@@ -435,6 +672,7 @@ def logout():
 # ================= RUN =================
 
 if __name__ == "__main__":
+
     app.run(
         host="0.0.0.0",
         port=10000
